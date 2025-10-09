@@ -18,13 +18,12 @@ ETAPAS = [
 
 # Grupos de variáveis usados nos selects
 GRUPOS_VARIAVEIS = [
-"Estudo",
-"Reembolso",
-"Tipo_visita",
-"Medico_responsavel",
-"Consultorio",
-"Jejum",
-"Desfecho_atendimento",
+    "Reembolso",
+    "Tipo_visita",
+    "Medico_responsavel",
+    "Consultorio",
+    "Jejum",
+    "Desfecho_atendimento",
 ]
 
 
@@ -79,6 +78,25 @@ def listar_variaveis_por_grupo(grupo: str):
         .execute()
         .data
     )
+
+
+# ------------------ NOVO: Estudos ------------------
+def listar_estudos():
+    """
+    Busca estudos na tabela 'estudos' (id, nome).
+    Se não existir / vier vazia, tenta 'ag_estudos' como fallback.
+    Retorna lista de dicts: [{'id': 1, 'nome': 'XYZ'}, ...]
+    """
+    data = (client.table("estudos").select("id, nome").order("nome").execute().data or [])
+    if not data:
+        # fallback opcional, caso o nome da tabela seja 'ag_estudos'
+        data = client.table("ag_estudos").select("id, nome").order("nome").execute().data or []
+    return data
+
+def map_estudos():
+    """Retorna dict {id: nome} a partir da tabela estudos."""
+    lst = listar_estudos()
+    return {it["id"]: it["nome"] for it in lst}
 
 
 def listar_status_da_etapa(nome_etapa: str):

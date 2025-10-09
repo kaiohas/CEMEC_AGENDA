@@ -9,6 +9,8 @@ from utils import (
     status_atual_por_etapa,
     atualizar_hora_saida,
     listar_variaveis_por_grupo,
+    listar_estudos,  
+    map_estudos,
 )
 
 st.set_page_config(page_title="Gestão | Agenda Unificada", page_icon="🧭", layout="wide")
@@ -16,6 +18,9 @@ require_roles(["gestao", "gerencia"])
 user = st.session_state["user"]
 
 st.title("🧭 Gestão de Agendamentos")
+
+estudos_tbl = listar_estudos()                 # [{'id','nome'}]
+map_estudo = map_estudos()                     # {id: nome}
 
 # -------------------- Filtros globais --------------------
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
@@ -26,12 +31,10 @@ with fc2:
 with fc3:
     termo_paciente = st.text_input("Paciente (nome ou ID contém)")
 with fc4:
-    estudos = listar_variaveis_por_grupo("Estudo") or []
-    map_estudo = {e["id"]: e["nome_variavel"] for e in estudos}
     est_sel = st.selectbox(
         "Estudo",
-        options=[{"id": None, "nome_variavel": "(todos)"}] + estudos,
-        format_func=lambda x: x["nome_variavel"],
+        options=[{"id": None, "nome": "(todos)"}] + estudos_tbl,
+        format_func=lambda x: x["nome"],
         index=0,
         key="flt_estudo",
     )
@@ -625,6 +628,7 @@ with aba_edit:
     i_med, lst_med = _idx(op_medico,       sel2.get("medico_responsavel_id"))
     i_con, lst_con = _idx(op_consultorio,  sel2.get("consultorio_id"))
     i_jej, lst_jej = _idx(op_jejum,        sel2.get("jejum_id"))
+    op_estudo = listar_estudos()
 
     with st.form("frm_edit_gerencia", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
@@ -633,7 +637,13 @@ with aba_edit:
             id_paciente   = st.text_input("ID Paciente",   value=sel2.get("id_paciente") or "")
             nome_paciente = st.text_input("Nome do paciente", value=sel2.get("nome_paciente") or "")
         with c2:
-            estudo = st.selectbox("Estudo", options=lst_est, index=i_est, format_func=lambda x: x["nome_variavel"])
+            estudo = st.selectbox(
+                "Estudo",
+                options=[{"id": None, "nome": "(selecione)"}] + op_estudo,
+                index=0 if sel2.get("estudo_id") is None else
+                    next((i for i, it in enumerate([{"id": None, "nome": "(selecione)"}] + op_estudo) if it["id"] == sel2.get("estudo_id")), 0),
+                format_func=lambda x: x["nome"]
+            )
             tipo_visita = st.selectbox("Tipo de visita", options=lst_tip, index=i_tip, format_func=lambda x: x["nome_variavel"])
             reembolso = st.selectbox("Reembolso", options=lst_reb, index=i_reb, format_func=lambda x: x["nome_variavel"])
         with c3:

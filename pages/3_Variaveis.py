@@ -15,7 +15,7 @@ aba1, aba2 = st.tabs(["Variáveis de seleção", "Tipos de status (etapas)"])
 # ABA 1 — Variáveis de seleção
 # ==============================================
 with aba1:
-    st.subheader("Variáveis de seleção (Estudo, Reembolso, etc.)")
+    st.subheader("Variáveis de seleção (Reembolso, Tipo de visita, Médico responsável, Consultório, Jejum, Desfecho do atendimento)")
     c1, c2 = st.columns([1, 2], gap="large")
 
     with c1:

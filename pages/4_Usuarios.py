@@ -56,7 +56,7 @@ with aba2:
         .data or []
     )
     df = pd.DataFrame(users)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
