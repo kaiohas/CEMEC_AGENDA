@@ -92,7 +92,7 @@ with st.form("frm_novo_agendamento", clear_on_submit=False):
     with c6:
         obs_coleta = st.text_input("Obs. de coleta")
 
-    submitted = st.form_submit_button("Cadastrar agendamento", type="primary", width="stretch")
+    submitted = st.form_submit_button("Cadastrar agendamento", type="primary", use_container_width=True)
 
 if submitted:
     if not data_visita or not nome_paciente.strip():
@@ -223,46 +223,40 @@ else:
     piv_out = piv.reset_index()
     piv_out["data_visita"] = pd.to_datetime(piv_out["data_visita"]).dt.strftime("%d/%m/%Y")
 
-    st.dataframe(piv_out, width="stretch")
+    st.dataframe(piv_out, use_container_width=True)
 
 st.markdown("---")
 
-# ===== Matriz principal =====
+# ===== Matriz principal - APENAS COLUNAS SOLICITADAS =====
 st.markdown("### 📋 Detalhamento dos agendamentos")
 if df.empty:
     st.info("Sem registros para os filtros aplicados.")
 else:
-    df["estudo"]             = df["estudo_id"].map(map_estudo)  # <— vem da tabela 'estudos'
-    df["reembolso"]          = df["reembolso_id"].map(map_reembolso)
-    df["tipo_visita"]        = df["tipo_visita_id"].map(map_tipo)
-    df["medico_responsavel"] = df["medico_responsavel_id"].map(map_medico)
-    df["consultorio"]        = df["consultorio_id"].map(map_consultorio)
-    df["jejum"]              = df["jejum_id"].map(map_jejum)
+    # Mapeamentos de texto
+    df["Estudo"] = df["estudo_id"].map(map_estudo).fillna("(sem estudo)")
+    df["Tipo de Visita"] = df["tipo_visita_id"].map(map_tipo).fillna("(não informado)")
+    df["Médico"] = df["medico_responsavel_id"].map(map_medico).fillna("(não informado)")
+    
+    # Renomeia colunas diretas
+    df["Responsável Agendamento"] = df["responsavel_agendamento_nome"]
+    df["ID"] = df["id_paciente"]
+    
+    # Formata data da visita
+    df["Data da Visita"] = pd.to_datetime(df["data_visita"], errors="coerce").dt.strftime("%d/%m/%Y")
+    
+    # Formata hora da consulta (apenas HH:MM)
+    df["Hora da Visita"] = pd.to_datetime(df["hora_consulta"], errors="coerce").dt.strftime("%H:%M")
 
-    df["data_visita"] = pd.to_datetime(df["data_visita"], errors="coerce").dt.strftime("%d/%m/%Y")
-    if "hora_chegada" in df.columns:
-        df["hora_chegada"] = (
-            pd.to_datetime(df["hora_chegada"], errors="coerce", utc=True)
-            .dt.tz_convert("America/Sao_Paulo")
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-    if "hora_saida" in df.columns:
-        df["hora_saida"] = (
-            pd.to_datetime(df["hora_saida"], errors="coerce", utc=True)
-            .dt.tz_convert("America/Sao_Paulo")
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-
+    # Define as colunas a serem exibidas na ordem solicitada
     cols_show = [
-        "id", "data_visita", "hora_consulta",
-        "id_paciente", "nome_paciente",
-        "estudo", "programacao",
-        "horario_uber",
-        "reembolso",
-        "visita", "tipo_visita", "medico_responsavel", "consultorio",
-        "obs_visita", "jejum", "obs_coleta",
-        "hora_chegada", "hora_saida",
-        "responsavel_agendamento_nome",
+        "Responsável Agendamento",
+        "Estudo",
+        "ID",
+        "Data da Visita",
+        "Hora da Visita",
+        "Tipo de Visita",
+        "Médico"
     ]
-    cols_show = [c for c in cols_show if c in df.columns]
-    st.dataframe(df[cols_show], width="stretch", hide_index=True)
+    
+    # Exibe apenas as colunas solicitadas
+    st.dataframe(df[cols_show], use_container_width=True, hide_index=True)

@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from supabase_client import client
 from auth import require_roles
 from utils import (
@@ -9,9 +9,12 @@ from utils import (
     status_atual_por_etapa,
     atualizar_hora_saida,
     listar_variaveis_por_grupo,
-    listar_estudos,  
+    listar_estudos,
     map_estudos,
 )
+
+# st-aggrid imports
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 st.set_page_config(page_title="Gestão | Agenda Unificada", page_icon="🧭", layout="wide")
 require_roles(["gestao", "gerencia"])
@@ -126,6 +129,18 @@ def _fmt_dt_ddmmyyyy_hhmmss(ts, assume_utc=False):
             return ""
         return t.strftime("%d/%m/%Y %H:%M:%S")
 
+def _parse_time_from_string(s):
+    """Converte string de hora (ex: '14:30:00' ou '14:30') para time object."""
+    if not s:
+        return None
+    try:
+        t = pd.to_datetime(s, errors="coerce")
+        if pd.notna(t):
+            return t.time()
+    except Exception:
+        pass
+    return None
+
 # -------------------- Abas --------------------
 aba_gestao, aba_rel, aba_edit = st.tabs(["Gestão", "Relatório", "Edição (Gerência)"])
 
@@ -133,21 +148,115 @@ aba_gestao, aba_rel, aba_edit = st.tabs(["Gestão", "Relatório", "Edição (Ger
 # ABA 1 — GESTÃO
 # =======================================================================================
 with aba_gestao:
-    # Label com: Estudo, Programação, Tipo de visita (texto) e Visita
-    def _fmt_opt(a):
-        hc = a.get("hora_consulta") or "--:--:--"
-        est_txt = map_estudo.get(a.get("estudo_id"), "(sem estudo)")
-        tipo_txt = map_tipo_visita.get(a.get("tipo_visita_id"), "(s/ tipo)")
-        visita = a.get("visita") or "(s/ visita)"
-        prog = a.get("programacao") or "(s/ prog)"
-        return (
-            f"#{a['id']} | {a.get('nome_paciente','(s/ nome)')} | "
-            f"{a['data_visita']} {hc} | Estudo: {est_txt} | Prog: {prog} | Tipo: {tipo_txt} | Visita: {visita}"
-        )
+    # ----- Monta DataFrame visual semelhante ao Detalhamento dos Agendamentos -----
+    # Mapas de texto usados no detalhamento
+    def _map_dict(grupo):
+        lst = listar_variaveis_por_grupo(grupo) or []
+        return {x["id"]: x["nome_variavel"] for x in lst}
 
-    options = {_fmt_opt(a): a for a in agends}
-    key = st.selectbox("Selecione um agendamento", list(options.keys()))
-    sel = options[key]
+    map_reembolso   = _map_dict("Reembolso")
+    map_tipo        = _map_dict("Tipo_visita")
+    map_medico      = _map_dict("Medico_responsavel")
+    map_consultorio = _map_dict("Consultorio")
+    map_jejum       = _map_dict("Jejum")
+
+    # Converte agends em DataFrame para exibição em tabela
+    df_vis = pd.DataFrame(agends)
+
+    # Cria colunas solicitadas e formatadas (mesmas do Detalhamento)
+    df_vis["Responsável Agendamento"] = df_vis["responsavel_agendamento_nome"]
+    df_vis["Estudo"] = df_vis["estudo_id"].map(map_estudo).fillna("(sem estudo)")
+    df_vis["ID"] = df_vis["id_paciente"]
+    df_vis["Data da Visita"] = pd.to_datetime(df_vis["data_visita"], errors="coerce").dt.strftime("%d/%m/%Y")
+    # Formata hora_consulta para apenas HH:MM (se possível)
+    try:
+        df_vis["Hora da Visita"] = pd.to_datetime(df_vis["hora_consulta"], errors="coerce").dt.strftime("%H:%M")
+    except Exception:
+        df_vis["Hora da Visita"] = df_vis["hora_consulta"].astype(str).fillna("")
+
+    df_vis["Tipo de Visita"] = df_vis["tipo_visita_id"].map(map_tipo).fillna("(não informado)")
+    df_vis["Médico"] = df_vis["medico_responsavel_id"].map(map_medico).fillna("(não informado)")
+
+    # Mantemos a coluna 'id' para mapear seleção para o agendamento original (a coluna ficará oculta)
+    # Ordem das colunas a exibir na grade (id será oculto)
+    cols_show = [
+        "Responsável Agendamento",
+        "Estudo",
+        "ID",
+        "Data da Visita",
+        "Hora da Visita",
+        "Tipo de Visita",
+        "Médico",
+    ]
+
+    st.markdown("### Seleção do agendamento")
+    st.markdown(
+        "Clique em uma linha para selecionar um agendamento (seleção única). Após selecionar, os campos abaixo serão preenchidos para edição."
+    )
+
+    # Configurações do AgGrid
+    # Garantir que 'id' exista no df_vis (vindo dos agends originais)
+    if "id" not in df_vis.columns:
+        df_vis["id"] = [a.get("id") for a in agends]
+
+    gb = GridOptionsBuilder.from_dataframe(df_vis[cols_show + ["id"]])
+    gb.configure_default_column(enableValue=True, editable=False, resizable=True, filter=True, sortable=True)
+    # Esconde a coluna id (mantemos para recuperar o id do agendamento)
+    gb.configure_column("id", header_name="ag_id", hide=True)
+    # Seleção única por clique (sem checkbox)
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    gridOptions = gb.build()
+
+    grid_response = AgGrid(
+        df_vis[cols_show + ["id"]],
+        gridOptions=gridOptions,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        allow_unsafe_jscode=True,
+        theme="alpine",
+        fit_columns_on_grid_load=True,
+        enable_enterprise_modules=False,
+    )
+
+    # selected_rows pode ser lista de dicts ou um DataFrame dependendo da versão;
+    # tratar ambos os casos para evitar "truth value of a DataFrame is ambiguous".
+    selected_rows = grid_response.get("selected_rows", None)
+
+    sel = None
+    if selected_rows is None:
+        # fallback: sem seleção explícita, usa o primeiro agendamento (comportamento anterior)
+        sel = agends[0]
+    else:
+        # selected_rows pode ser lista ou DataFrame
+        try:
+            if isinstance(selected_rows, list):
+                if len(selected_rows) > 0:
+                    selected_id = selected_rows[0].get("id")
+                    if selected_id is not None:
+                        selected_id = int(selected_id)
+                        sel = next((a for a in agends if a["id"] == selected_id), None)
+            elif isinstance(selected_rows, pd.DataFrame):
+                if len(selected_rows) > 0:
+                    selected_id = selected_rows.iloc[0].get("id")
+                    if pd.notna(selected_id):
+                        selected_id = int(selected_id)
+                        sel = next((a for a in agends if a["id"] == selected_id), None)
+            else:
+                # outro tipo (ex.: numpy recarray), tentar tratar como iterável
+                try:
+                    if len(selected_rows) > 0:
+                        first = selected_rows[0]
+                        if isinstance(first, dict):
+                            selected_id = first.get("id")
+                            selected_id = int(selected_id)
+                            sel = next((a for a in agends if a["id"] == selected_id), None)
+                except Exception:
+                    sel = None
+        except Exception:
+            sel = None
+
+    if sel is None:
+        # garante que sempre temos um agendamento selecionado para evitar erros abaixo
+        sel = agends[0]
 
     st.write("\n")
     st.subheader("Detalhes do agendamento")
@@ -169,9 +278,18 @@ with aba_gestao:
 
     st.divider()
 
-    # Chegada
+    # Chegada - PRÉ-PREENCHIDO com hora_chegada existente
     st.subheader("Chegada")
-    hora_chegada_new = st.time_input("Atualizar hora de chegada", value=None, key="hora_chegada_input")
+    
+    # Converte hora_chegada existente para time object
+    hora_chegada_atual = _parse_time_from_string(sel.get("hora_chegada"))
+    
+    hora_chegada_new = st.time_input(
+        "Atualizar hora de chegada", 
+        value=hora_chegada_atual if hora_chegada_atual else time(0, 0),
+        key="hora_chegada_input"
+    )
+    
     if st.button("Salvar hora de chegada", use_container_width=True):
         if hora_chegada_new is None:
             st.warning("Selecione uma hora.")
@@ -183,7 +301,7 @@ with aba_gestao:
 
     st.divider()
 
-    # Financeiro
+    # Financeiro - PRÉ-PREENCHIDO com valores existentes
     st.subheader("Financeiro")
     f1, f2 = st.columns(2)
     with f1:
@@ -213,7 +331,7 @@ with aba_gestao:
 
     st.divider()
 
-    # Status por etapa
+    # Status por etapa - PRÉ-PREENCHIDO com status atuais
     st.subheader("Status por etapa")
     atuais = status_atual_por_etapa(sel["id"])
     novos = {}
@@ -221,12 +339,25 @@ with aba_gestao:
         tipos = listar_status_da_etapa(etapa)
         labels = [t["nome_status"] for t in tipos]
         cur = atuais.get(etapa)
-        novos[etapa] = st.selectbox(
-            etapa.replace("_", " ").title(),
-            options=["(sem alteração)"] + labels,
-            index=(labels.index(cur) + 1) if cur in labels else 0,
-            key=f"sel_{etapa}",
-        )
+        
+        # Se houver status atual, seleciona ele diretamente; senão mostra "(sem alteração)"
+        if cur and cur in labels:
+            # Seleciona o status atual (não mostra "sem alteração")
+            index_default = labels.index(cur)
+            novos[etapa] = st.selectbox(
+                etapa.replace("_", " ").title(),
+                options=labels,
+                index=index_default,
+                key=f"sel_{etapa}",
+            )
+        else:
+            # Sem status atual, mostra "(sem alteração)" como primeira opção
+            novos[etapa] = st.selectbox(
+                etapa.replace("_", " ").title(),
+                options=["(sem alteração)"] + labels,
+                index=0,
+                key=f"sel_{etapa}",
+            )
 
     if st.button("Registrar alterações de status", use_container_width=True, type="primary"):
         algo_mudou = False
@@ -251,7 +382,7 @@ with aba_gestao:
 
     st.divider()
 
-    # Desfecho
+    # Desfecho - PRÉ-PREENCHIDO com desfecho existente
     st.subheader("Desfecho do atendimento")
     desfechos = listar_variaveis_por_grupo("Desfecho_atendimento") or []
     atual_id = sel.get("desfecho_atendimento_id")
@@ -318,7 +449,7 @@ with aba_gestao:
             st.rerun()
 
 # =======================================================================================
-# ABA 2 — RELATÓRIO (todos os campos + tempos por etapa) — corrigido TZ e colunas padronizadas
+# ABA 2 — RELATÓRIO (permanece inalterado)
 # =======================================================================================
 with aba_rel:
     st.subheader("Relatório (padronizado) + tempos por etapa")
@@ -462,7 +593,6 @@ with aba_rel:
                     t_fim = ensure_utc(rs.values[0]) if len(rs) and pd.notna(rs.values[0]) else now_utc
                 if t_ini is None or t_fim is None:
                     continue
-                # >>>> Fix tz: ambos são tz-aware UTC aqui
                 delta = (t_fim - t_ini).total_seconds()
                 if delta > 0:
                     total_sec += delta
@@ -522,21 +652,16 @@ with aba_rel:
         sum_sec = pd.DataFrame({"agendamento_id": [a["id"] for a in agends], "Total (HH:MM)": "00:00"})
 
     # ---------- Montagem do relatório com colunas padronizadas ----------
-    # Campos clínicos
     clin_cols = ["Estudo", "Tipo de visita", "Visita", "Médico responsável", "Consultório", "Jejum", "Desfecho atendimento"]
-    # Participante
     part_cols = ["ID participante", "Nome participante"]
     df_ag["ID participante"] = df_ag["id_paciente"]
     df_ag["Nome participante"] = df_ag["nome_paciente"]
-    # Agendamento/operacional
     op_cols = [
         "Data cadastro", "Data visita", "Hora consulta", "Programação", "Horário Uber",
         "Hora chegada (local)", "Hora saída (local)", "Responsável_agendamento_nome"
     ]
-    # Financeiro
     fin_cols = ["Valor", "Valor financeiro", "Reembolso"]
 
-    # Renomeia campos brutos para rótulos amigáveis
     rename_base = {
         "data_visita": "Data visita",
         "hora_consulta": "Hora consulta",
@@ -554,22 +679,18 @@ with aba_rel:
         if c in df_ag.columns:
             base_cols.append(c)
 
-    # DataFrame base ordenado
     rel_base = df_ag.copy()
     if "Data visita" in rel_base.columns and "Hora consulta" in rel_base.columns:
         rel_base = rel_base.sort_values(["Data visita", "Hora consulta", "id"])
 
-    # Junta tempos / últimos status / total
     rel = rel_base.rename(columns={"id": "agendamento_id"}) \
         .merge(pivot_time, on="agendamento_id", how="left") \
         .merge(pivot_last, on="agendamento_id", how="left") \
         .merge(sum_sec, on="agendamento_id", how="left")
 
-    # Colunas finais desejadas (em blocos)
     tempo_cols = [c for c in rel.columns if c.startswith("Tempo ")]
     ultimo_cols = [c for c in rel.columns if c.startswith("Último ")]
     ordered_cols = base_cols + tempo_cols + ultimo_cols + ["Total (HH:MM)"]
-    # Garante que não perdemos cols extras relevantes
     ordered_cols = [c for c in ordered_cols if c in rel.columns]
 
     st.dataframe(rel[ordered_cols], use_container_width=True, hide_index=True)
@@ -584,7 +705,7 @@ with aba_rel:
     )
 
 # =======================================================================================
-# ABA 3 — EDIÇÃO (GERÊNCIA)
+# ABA 3 — EDIÇÃO (GERÊNCIA) - COM TABELA AGGRID PARA SELEÇÃO
 # =======================================================================================
 with aba_edit:
     if user["role"] != "gerencia":
@@ -593,20 +714,128 @@ with aba_edit:
 
     st.subheader("Editar campos de lançamento (Gerência)")
 
-    def _fmt_opt2(a):
-        hc = a.get("hora_consulta") or "--:--:--"
-        est_txt = map_estudo.get(a.get("estudo_id"), "(sem estudo)")
-        tipo_txt = map_tipo_visita.get(a.get("tipo_visita_id"), "(s/ tipo)")
-        visita = a.get("visita") or "(s/ visita)"
-        prog = a.get("programacao") or "(s/ prog)"
-        return (
-            f"#{a['id']} | {a.get('nome_paciente','(s/ nome)')} | "
-            f"{a['data_visita']} {hc} | Estudo: {est_txt} | Prog: {prog} | Tipo: {tipo_txt} | Visita: {visita}"
-        )
+    # ---------- Mapas de texto (reutilizando da aba Gestão) ----------
+    def _map_dict(grupo):
+        lst = listar_variaveis_por_grupo(grupo) or []
+        return {x["id"]: x["nome_variavel"] for x in lst}
 
-    options2 = {_fmt_opt2(a): a for a in agends}
-    key2 = st.selectbox("Selecione um agendamento para editar", list(options2.keys()), key="edit_sel")
-    sel2 = options2[key2]
+    map_reembolso   = _map_dict("Reembolso")
+    map_tipo        = _map_dict("Tipo_visita")
+    map_medico      = _map_dict("Medico_responsavel")
+    map_consultorio = _map_dict("Consultorio")
+    map_jejum       = _map_dict("Jejum")
+
+    # ---------- Monta DataFrame visual para seleção (mesma lógica da aba Gestão) ----------
+    df_vis_edit = pd.DataFrame(agends)
+
+    df_vis_edit["Responsável Agendamento"] = df_vis_edit["responsavel_agendamento_nome"]
+    df_vis_edit["Estudo"] = df_vis_edit["estudo_id"].map(map_estudo).fillna("(sem estudo)")
+    df_vis_edit["ID"] = df_vis_edit["id_paciente"]
+    df_vis_edit["Data da Visita"] = pd.to_datetime(df_vis_edit["data_visita"], errors="coerce").dt.strftime("%d/%m/%Y")
+    try:
+        df_vis_edit["Hora da Visita"] = pd.to_datetime(df_vis_edit["hora_consulta"], errors="coerce").dt.strftime("%H:%M")
+    except Exception:
+        df_vis_edit["Hora da Visita"] = df_vis_edit["hora_consulta"].astype(str).fillna("")
+
+    df_vis_edit["Tipo de Visita"] = df_vis_edit["tipo_visita_id"].map(map_tipo).fillna("(não informado)")
+    df_vis_edit["Médico"] = df_vis_edit["medico_responsavel_id"].map(map_medico).fillna("(não informado)")
+
+    if "id" not in df_vis_edit.columns:
+        df_vis_edit["id"] = [a.get("id") for a in agends]
+
+    cols_show_edit = [
+        "Responsável Agendamento",
+        "Estudo",
+        "ID",
+        "Data da Visita",
+        "Hora da Visita",
+        "Tipo de Visita",
+        "Médico",
+    ]
+
+    st.markdown("### Seleção do agendamento para edição")
+    st.markdown(
+        "Clique em uma linha para selecionar o agendamento que deseja editar."
+    )
+
+    # Configurações do AgGrid para a aba Edição
+    gb_edit = GridOptionsBuilder.from_dataframe(df_vis_edit[cols_show_edit + ["id"]])
+    gb_edit.configure_default_column(enableValue=True, editable=False, resizable=True, filter=True, sortable=True)
+    gb_edit.configure_column("id", header_name="ag_id", hide=True)
+    gb_edit.configure_selection(selection_mode="single", use_checkbox=False)
+    gridOptions_edit = gb_edit.build()
+
+    grid_response_edit = AgGrid(
+        df_vis_edit[cols_show_edit + ["id"]],
+        gridOptions=gridOptions_edit,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        allow_unsafe_jscode=True,
+        theme="alpine",
+        fit_columns_on_grid_load=True,
+        enable_enterprise_modules=False,
+        key="grid_edit"  # Key única para evitar conflito com a aba Gestão
+    )
+
+    selected_rows_edit = grid_response_edit.get("selected_rows", None)
+
+    sel2 = None
+    if selected_rows_edit is None:
+        sel2 = agends[0]
+    else:
+        try:
+            if isinstance(selected_rows_edit, list):
+                if len(selected_rows_edit) > 0:
+                    selected_id_edit = selected_rows_edit[0].get("id")
+                    if selected_id_edit is not None:
+                        selected_id_edit = int(selected_id_edit)
+                        sel2 = next((a for a in agends if a["id"] == selected_id_edit), None)
+            elif isinstance(selected_rows_edit, pd.DataFrame):
+                if len(selected_rows_edit) > 0:
+                    selected_id_edit = selected_rows_edit.iloc[0].get("id")
+                    if pd.notna(selected_id_edit):
+                        selected_id_edit = int(selected_id_edit)
+                        sel2 = next((a for a in agends if a["id"] == selected_id_edit), None)
+            else:
+                try:
+                    if len(selected_rows_edit) > 0:
+                        first = selected_rows_edit[0]
+                        if isinstance(first, dict):
+                            selected_id_edit = first.get("id")
+                            selected_id_edit = int(selected_id_edit)
+                            sel2 = next((a for a in agends if a["id"] == selected_id_edit), None)
+                except Exception:
+                    sel2 = None
+        except Exception:
+            sel2 = None
+
+    if sel2 is None:
+        sel2 = agends[0]
+
+    st.write("\n")
+    st.markdown(f"**Editando agendamento ID: {sel2['id']} - {sel2.get('nome_paciente', '(sem nome)')}**")
+    st.divider()
+
+    # ---------- Buscar usuários com perfil 'agenda' ou 'gerencia' ----------
+    usuarios_resp = (
+        client.table("ag_users")
+        .select("id, username, role")
+        .in_("role", ["agenda", "gerencia"])
+        .eq("is_active", True)
+        .order("username")
+        .execute()
+        .data
+        or []
+    )
+
+    usuarios_opts = [{"id": u["id"], "username": u["username"], "role": u["role"]} for u in usuarios_resp]
+
+    resp_atual_id = sel2.get("responsavel_agendamento_id")
+    idx_resp = 0
+    if resp_atual_id:
+        for i, u in enumerate(usuarios_opts):
+            if u["id"] == resp_atual_id:
+                idx_resp = i
+                break
 
     op_estudo       = listar_variaveis_por_grupo("Estudo") or []
     op_reembolso    = listar_variaveis_por_grupo("Reembolso") or []
@@ -661,6 +890,17 @@ with aba_edit:
         with c6:
             obs_coleta = st.text_input("Obs. de coleta", value=sel2.get("obs_coleta") or "")
 
+        st.divider()
+        
+        st.markdown("#### Responsável do agendamento")
+        responsavel_sel = st.selectbox(
+            "Responsável (agenda ou gerência)",
+            options=usuarios_opts,
+            index=idx_resp,
+            format_func=lambda x: f"{x['username']} ({x['role']})",
+            key="resp_agend_sel"
+        )
+
         submitted = st.form_submit_button("Salvar alterações", type="primary", use_container_width=True)
 
     if submitted:
@@ -679,6 +919,8 @@ with aba_edit:
             "obs_visita": obs_visita.strip() if obs_visita else None,
             "jejum_id": jejum["id"] if jejum and jejum.get("id") else None,
             "obs_coleta": obs_coleta.strip() if obs_coleta else None,
+            "responsavel_agendamento_id": responsavel_sel["id"],
+            "responsavel_agendamento_nome": responsavel_sel["username"],
         }
         client.table("ag_agendamentos").update(payload).eq("id", sel2["id"]).execute()
         st.success("Agendamento atualizado.")
