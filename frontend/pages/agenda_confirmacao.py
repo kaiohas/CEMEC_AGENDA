@@ -4,7 +4,7 @@
 # ============================================================
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from frontend.supabase_client import get_supabase_client, supabase_execute, registrar_log_agendamento
@@ -185,13 +185,20 @@ def page_agenda_confirmacao():
 
         grid_options = gb.build()
 
+        # Chave dependente do conjunto de IDs exibidos: se a lista de agendamentos
+        # mudar (novo reagendamento inserido, filtro, etc.) o componente é recriado
+        # do zero, evitando que uma seleção "por posição" antiga sobreviva e acabe
+        # apontando pra uma linha diferente depois que a grid reordena.
+        grid_key = f"aggrid_confirmacao_{hash(tuple(df_grid['ID'].tolist()))}"
+
         grid_response = AgGrid(
             df_grid,
             gridOptions=grid_options,
             update_mode=GridUpdateMode.SELECTION_CHANGED,
             fit_columns_on_grid_load=False,
             height=400,
-            theme="streamlit"
+            theme="streamlit",
+            key=grid_key,
         )
 
         # =====================================================
@@ -260,18 +267,28 @@ def page_agenda_confirmacao():
 
             nova_data_visita = None
             novo_horario = None
+            data_original = pd.to_datetime(agendamento_data.get("data_visita"), errors="coerce")
+            data_original = data_original.date() if pd.notna(data_original) else date.today()
 
             if novo_status == "Reagendado":
                 st.info("📅 Preencha a nova data e horário. Um novo agendamento será criado com os mesmos dados.")
                 col_r1, col_r2 = st.columns(2)
                 with col_r1:
                     nova_data_visita = st.date_input(
-                        "Nova Data da Visita", key=f"nova_data_{agendamento_id}", format="DD/MM/YYYY"
+                        "Nova Data da Visita",
+                        value=data_original + timedelta(days=1),
+                        key=f"nova_data_{agendamento_id}",
+                        format="DD/MM/YYYY",
                     )
                 with col_r2:
                     novo_horario = st.time_input(
                         "Novo Horário da Visita", key=f"novo_horario_{agendamento_id}", step=1800
                     )
+                st.warning(
+                    f"⚠️ Confirme antes de gravar: **{agendamento_data.get('nome_paciente', '—')}** "
+                    f"({agendamento_data.get('nm_estudo', '—')}) será reagendado de "
+                    f"**{data_original.strftime('%d/%m/%Y')}** para **{nova_data_visita.strftime('%d/%m/%Y')}**."
+                )
 
             if st.button(
                 "💾 Atualizar Status",
@@ -281,6 +298,8 @@ def page_agenda_confirmacao():
             ):
                 if novo_status == "Reagendado" and not nova_data_visita:
                     feedback("⚠️ Informe a nova data para o reagendamento", "error", "⚠️")
+                elif novo_status == "Reagendado" and nova_data_visita == data_original:
+                    feedback("⚠️ A nova data deve ser diferente da data original do agendamento", "error", "⚠️")
                 else:
                     try:
                         ag_id = agendamento_id
@@ -333,6 +352,10 @@ def page_agenda_confirmacao():
                             msg_ok = "✅ Status atualizado com sucesso!"
 
                         _invalidar_cache()
+                        # Fecha o formulário de confirmação: evita que ele reabra sozinho
+                        # (com "Reagendado" e uma data ainda preenchidos) apontando,
+                        # por engano, pra um agendamento diferente após o rerun.
+                        st.session_state.pop("_conf_selected_id", None)
                         st.session_state["_confirmacao_feedback"] = (msg_ok, "success")
                         st.rerun()
 
