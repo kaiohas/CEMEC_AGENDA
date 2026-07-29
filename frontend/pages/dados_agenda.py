@@ -283,7 +283,7 @@ def page_dados_agenda():
         _hoje = date.today()
         _p_ini      = _qp_date(_p.get("di"),   _hoje - timedelta(days=10))
         _p_fim      = _qp_date(_p.get("df"),   _hoje)
-        _p_disc     = _p.get("disc", "(Todas)")
+        _p_disc     = _qp_list(_p.get("disc", ""))
         _p_estudo   = _qp_list(_p.get("est",  ""))
         _p_desfecho = _qp_list(_p.get("des",  ""))
         _p_conf     = _qp_list(_p.get("conf", ""))
@@ -302,10 +302,10 @@ def page_dados_agenda():
             data_fim = st.date_input("Data fim", value=_p_fim, format="DD/MM/YYYY")
         with fc3:
             disciplinas_opts = sorted([x for x in df_estudos["disciplina"].dropna().unique() if x])
-            disc_opts_full = ["(Todas)"] + disciplinas_opts
-            disciplina_sel = st.selectbox(
-                "Disciplina", disc_opts_full,
-                index=disc_opts_full.index(_p_disc) if _p_disc in disc_opts_full else 0
+            disciplina_sel = st.multiselect(
+                "Disciplina", options=disciplinas_opts,
+                default=[d for d in _p_disc if d in disciplinas_opts],
+                placeholder="Todas"
             )
         with fc4:
             estudos_disp = sorted([x for x in df_estudos["estudo"].dropna().unique() if x])
@@ -322,8 +322,8 @@ def page_dados_agenda():
         # =====================================================
         # CARREGAR DADOS
         # =====================================================
-        if disciplina_sel != "(Todas)":
-            df_estudos_filtrado = df_estudos[df_estudos["disciplina"] == disciplina_sel]
+        if disciplina_sel:
+            df_estudos_filtrado = df_estudos[df_estudos["disciplina"].isin(disciplina_sel)]
         else:
             df_estudos_filtrado = df_estudos
 
@@ -367,7 +367,7 @@ def page_dados_agenda():
         st.query_params.update({
             "di":   str(data_ini),
             "df":   str(data_fim),
-            "disc": disciplina_sel,
+            "disc": ",".join(disciplina_sel),
             "est":  ",".join(estudo_sel),
             "des":  ",".join(desfecho_sel),
             "conf": ",".join(confirmacao_sel),
