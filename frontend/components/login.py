@@ -2,8 +2,10 @@
 # 🔐 frontend/components/login.py
 # Autenticação com nm_usuario/senha via Supabase
 # ============================================================
+import re
 import streamlit as st
 import hashlib
+from passlib.context import CryptContext
 from frontend.supabase_client import get_supabase_client
 from streamlit_cookies_controller import CookieController
 
@@ -11,14 +13,34 @@ _COOKIE_USUARIO = "dl_usuario"
 _COOKIE_UID     = "dl_uid"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 dias em segundos
 
+_bcrypt_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
 
 def hash_password(password: str) -> str:
-    """Hash de senha com SHA-256."""
+    """Hash de senha com SHA-256 (esquema legado, mantido só pra comparação)."""
     return hashlib.sha256(password.encode()).hexdigest()
 
+
+def is_hash_legado(ds_senha: str) -> bool:
+    return bool(_SHA256_HEX_RE.match(ds_senha or ""))
+
+
 def verificar_senha(password: str, hash_stored: str) -> bool:
-    """Verifica se a senha corresponde ao hash."""
-    return hash_password(password) == hash_stored
+    """Verifica a senha aceitando tanto o hash legado (sha256 sem salt)
+    quanto bcrypt — necessário desde que a API nova (server/) passou a
+    regravar senhas em bcrypt no primeiro login/troca de senha bem-sucedida."""
+    if not hash_stored:
+        return False
+    if is_hash_legado(hash_stored):
+        return hash_password(password) == hash_stored
+    return _bcrypt_ctx.verify(password, hash_stored)
+
+
+def hash_password_bcrypt(password: str) -> str:
+    """Usado ao regravar uma senha (troca de senha, ou rehash silencioso
+    de um login bem-sucedido com hash legado)."""
+    return _bcrypt_ctx.hash(password)
 
 def login_page():
     """Página de login com nm_usuario e senha."""
@@ -74,10 +96,17 @@ def login_page():
                     return
                 
                 # 3️⃣ Verifica senha
-                if not verificar_senha(senha, usuario.get("ds_senha", "")):
+                ds_senha_atual = usuario.get("ds_senha", "")
+                if not verificar_senha(senha, ds_senha_atual):
                     st.error("❌ Nome de usuário ou senha inválidos")
                     return
-                
+
+                # 3.1️⃣ Migração lazy: login com hash legado (sha256) -> regrava em bcrypt
+                if is_hash_legado(ds_senha_atual):
+                    novo_hash = hash_password_bcrypt(senha)
+                    supabase.table("tab_app_usuarios").update({"ds_senha": novo_hash}) \
+                        .eq("id_usuario", usuario["id_usuario"]).execute()
+
                 # 4️⃣ ✅ Login com sucesso!
                 st.session_state["usuario_logado"] = usuario["nm_usuario"]
                 st.session_state["id_usuario"] = usuario["id_usuario"]

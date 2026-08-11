@@ -11,3 +11,11 @@ venv/
 
 # CSVs de teste/importação (scripts/)
 scripts/*.csv
+
+# Nova versão do app (FastAPI + React) — vive num repositório à parte
+# (cemec-portal); este repo é só o Streamlit legado.
+server/
+web/
+
+# Configurações locais do Claude Code
+.claude/

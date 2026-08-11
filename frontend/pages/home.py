@@ -4,15 +4,10 @@
 # ============================================================
 import streamlit as st
 import pandas as pd
-import hashlib
 
 from frontend.supabase_client import get_supabase_client, supabase_execute
 from frontend.components.feedback import feedback
-
-
-def hash_password(password: str) -> str:
-    """Hash de senha com SHA-256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+from frontend.components.login import hash_password_bcrypt, verificar_senha
 
 
 def get_user_groups(usuario: str):
@@ -69,13 +64,12 @@ def update_user_password(usuario: str, senha_atual: str, senha_nova: str):
         if not resp.data:
             return False, "❌ Usuário não encontrado"
 
-        # 2️⃣ Valida senha atual
-        senha_atual_hash = hash_password(senha_atual)
-        if resp.data[0]["ds_senha"] != senha_atual_hash:
+        # 2️⃣ Valida senha atual (aceita hash legado sha256 ou bcrypt)
+        if not verificar_senha(senha_atual, resp.data[0]["ds_senha"]):
             return False, "❌ Senha atual incorreta"
 
-        # 3️⃣ Atualiza para nova senha
-        nova_senha_hash = hash_password(senha_nova)
+        # 3️⃣ Atualiza para nova senha (sempre gravada em bcrypt daqui pra frente)
+        nova_senha_hash = hash_password_bcrypt(senha_nova)
         supabase_execute(
             lambda: supabase.table("tab_app_usuarios")
             .update({"ds_senha": nova_senha_hash})

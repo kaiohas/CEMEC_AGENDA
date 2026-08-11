@@ -4,14 +4,9 @@
 # ============================================================
 import streamlit as st
 import pandas as pd
-import hashlib
 from frontend.supabase_client import get_supabase_client
 from frontend.components.feedback import feedback
-
-
-def hash_password(password: str) -> str:
-    """Hash de senha com SHA-256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+from frontend.components.login import hash_password_bcrypt as hash_password
 
 
 def aba_usuarios(usuario_logado: str):
